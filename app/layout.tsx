@@ -13,6 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://fashion-ai.vercel.app"),
   title: {
     default: "TwelveFrame — AI reel production studio",
     template: "%s · TwelveFrame",

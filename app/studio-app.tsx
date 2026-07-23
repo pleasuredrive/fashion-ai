@@ -173,6 +173,7 @@ export function StudioApp() {
         continue;
       }
       try {
+        let generatedReference: { data: string; mimeType: string } | undefined;
         if (includeFrames) {
           const frameResponse = await fetch("/api/generate", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -180,10 +181,11 @@ export function StudioApp() {
           });
           const frameResult = await frameResponse.json();
           if (!frameResponse.ok) throw new Error(frameResult.error || "Frame generation failed");
+          generatedReference = frameResult.asset;
         }
         const response = await fetch("/api/generate", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ projectId: project.id, shotId: target.id, kind: "video", prompt: target.videoPrompt }),
+          body: JSON.stringify({ projectId: project.id, shotId: target.id, kind: "video", prompt: target.videoPrompt, reference: generatedReference }),
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Generation failed");
@@ -200,7 +202,7 @@ export function StudioApp() {
     const manifest = {
       project: { title: project.title, aspectRatio: "9:16", clipCount: 12, secondsPerClip: 6, totalSeconds: 72 },
       models: api.models,
-      capcutOrder: shots.map((shot) => ({ order: shot.position, name: `${String(shot.position).padStart(2, "0")}-${shot.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.mp4`, title: shot.title, duration: 6, framePrompt: shot.framePrompt, videoPrompt: shot.videoPrompt, assetUrl: shot.videoAssetId ? `/api/assets/${shot.videoAssetId}` : null })),
+      capcutOrder: shots.map((shot) => ({ order: shot.position, name: `${String(shot.position).padStart(2, "0")}-${shot.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.mp4`, title: shot.title, duration: 6, framePrompt: shot.framePrompt, videoPrompt: shot.videoPrompt, assetUrl: shot.videoAssetId ? `/api/generated/${shot.videoAssetId}` : null })),
     };
     const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -354,7 +356,7 @@ function References({ uploads, chooseUpload, onBack }: { uploads: Record<string,
     { id: "room", title: "Room master", text: "Wide view with lighting and layout" },
   ];
   return <section className="page-content"><div className="page-heading"><div><button className="back-link" onClick={onBack}><ArrowLeft size={14} />Shot studio</button><span className="eyebrow">Consistency kit</span><h1>Reference library</h1><p>Give Nano Banana and Omni Flash the same visual anchors for all twelve shots.</p></div></div>
-    <div className="reference-intro"><div className="reference-number">4</div><div><strong>Four references are enough</strong><p>Use clean, well-lit images without text. The same references are attached to every generation request.</p></div><span><PackageCheck size={18} />Stored privately in R2</span></div>
+    <div className="reference-intro"><div className="reference-number">4</div><div><strong>Four references are enough</strong><p>Use clean, well-lit images without text. They stay in your browser session until persistent storage is connected.</p></div><span><PackageCheck size={18} />Private browser session</span></div>
     <div className="reference-grid">{refs.map((ref) => <button className={cn("upload-card", uploads[ref.id] && "has-upload")} key={ref.id} onClick={() => chooseUpload(ref.id)}>
       {uploads[ref.id] ? <><Image src={uploads[ref.id].url} alt="Uploaded reference preview" width={720} height={1280} unoptimized /><span className="replace-overlay"><RefreshCw size={17} />Replace</span></> : <><span className="upload-icon"><Upload size={21} /></span><strong>{ref.title}</strong><p>{ref.text}</p><small>PNG, JPG or WebP · max 15MB</small></>}
     </button>)}</div>
@@ -366,7 +368,7 @@ function QueueView({ shots, running, api, onRun, onExport }: { shots: Shot[]; ru
   const completed = shots.filter((shot) => shot.status === "complete").length;
   const active = shots.find((shot) => shot.status === "generating");
   return <section className="page-content"><div className="page-heading queue-heading"><div><span className="eyebrow">Batch control</span><h1>Generation queue</h1><p>Clips run one at a time to keep retries simple and spending visible.</p></div><div className="heading-actions"><button className="button secondary" onClick={onExport}><Download size={16} />Manifest</button><button className="button primary" onClick={onRun} disabled={running}><Play size={16} />{completed ? "Run selected again" : "Start batch"}</button></div></div>
-    <div className="queue-summary"><div className="queue-ring" style={{ "--progress": `${completed / 12 * 360}deg` } as React.CSSProperties}><span>{completed}<small>/12</small></span></div><div><span className="eyebrow">Batch progress</span><h2>{running ? `Generating shot ${active?.position ?? "…"}` : completed === 12 ? "All clips are ready" : "Ready when you are"}</h2><p>{api.mode === "mock" ? "Mock mode simulates the entire queue without spending API credit." : "Each completed clip is saved to private R2 storage."}</p></div><div className="queue-cost"><small>Video estimate</small><strong>{formatMoney(api.pricing.videoTotal)}</strong><span>12 clips · 72 seconds</span></div></div>
+    <div className="queue-summary"><div className="queue-ring" style={{ "--progress": `${completed / 12 * 360}deg` } as React.CSSProperties}><span>{completed}<small>/12</small></span></div><div><span className="eyebrow">Batch progress</span><h2>{running ? `Generating shot ${active?.position ?? "…"}` : completed === 12 ? "All clips are ready" : "Ready when you are"}</h2><p>{api.mode === "mock" ? "Mock mode simulates the entire queue without spending API credit." : "Completed clips are available through a private server-side Gemini download proxy."}</p></div><div className="queue-cost"><small>Video estimate</small><strong>{formatMoney(api.pricing.videoTotal)}</strong><span>12 clips · 72 seconds</span></div></div>
     <div className="queue-table"><div className="queue-row queue-header"><span>Shot</span><span>Prompt</span><span>Model</span><span>Status</span><span>Cost</span></div>{shots.map((shot, index) => <div className="queue-row" key={shot.id}><span className="queue-shot"><ShotVisual index={index} status={shot.status} compact /><b>{String(shot.position).padStart(2, "0")}</b></span><span><strong>{shot.title}</strong><small>{shot.motion}</small></span><span className="mono">omni-flash</span><span><StatusBadge status={shot.status} /></span><span className="mono">$0.60</span></div>)}</div>
   </section>;
 }

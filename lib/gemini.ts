@@ -1,5 +1,3 @@
-import { env } from "cloudflare:workers";
-
 const API_ROOT = "https://generativelanguage.googleapis.com/v1beta";
 
 export const GEMINI_MODELS = {
@@ -13,11 +11,10 @@ export function getGeminiMode() {
 }
 
 function getRuntimeKey() {
-  const workerKey = (env as unknown as { GEMINI_API_KEY?: string }).GEMINI_API_KEY;
-  return workerKey || process.env.GEMINI_API_KEY;
+  return process.env.GEMINI_API_KEY;
 }
 
-function getApiKey() {
+export function getGeminiApiKey() {
   const key = getRuntimeKey();
   if (!key) throw new Error("GEMINI_API_KEY is not configured");
   return key;
@@ -26,7 +23,7 @@ function getApiKey() {
 async function googleRequest(path: string, body: unknown) {
   const response = await fetch(`${API_ROOT}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": getApiKey() },
+    headers: { "Content-Type": "application/json", "x-goog-api-key": getGeminiApiKey() },
     body: JSON.stringify(body),
   });
   if (!response.ok) {
@@ -68,7 +65,7 @@ export async function generateVideo(prompt: string, reference?: { data: string; 
     model: GEMINI_MODELS.video,
     input,
     generation_config: { video_config: { task: reference ? "image_to_video" : "text_to_video" } },
-    response_format: { type: "video", aspect_ratio: "9:16" },
+    response_format: { type: "video", aspect_ratio: "9:16", delivery: "uri" },
     background: false,
     store: false,
     stream: false,

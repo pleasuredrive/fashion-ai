@@ -85,3 +85,26 @@ export function makeDemoProject(): { project: Project; shots: Shot[] } {
   };
   return { project, shots: buildShots(projectId, project.concept, project.style) };
 }
+
+export function createDraftProject(input: Partial<Project>): { project: Project; shots: Shot[] } {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const project: Project = {
+    id,
+    title: input.title?.trim() || "Untitled founder reel",
+    concept: input.concept?.trim() || "A founder moving with calm purpose through a warm contemporary studio",
+    audience: input.audience?.trim() || "Founders and creative operators",
+    style: input.style?.trim() || "Quiet luxury editorial, tactile and cinematic",
+    palette: input.palette?.trim() || "Charcoal, warm cream, walnut, oxblood",
+    status: "ready",
+    plannerModel: "gemini-3.5-flash-lite",
+    imageModel: "gemini-3.1-flash-image",
+    videoModel: "gemini-omni-flash-preview",
+    shotCount: 12,
+    durationSeconds: 6,
+    estimatedCost: 7.2,
+    createdAt: now,
+    updatedAt: now,
+  };
+  return { project, shots: buildShots(id, project.concept, project.style) };
+}

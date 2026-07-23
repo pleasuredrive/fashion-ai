@@ -8,7 +8,7 @@ An AI reel production SaaS for creating a consistent 72-second vertical reel as 
 - Gemini model routing for planning, consistent images and Omni Flash video
 - Mock mode that exercises the full workflow without API spend
 - Four-slot character, wardrobe and room reference library
-- D1 project/shot metadata and R2 media storage
+- Browser-session project state with server-proxied Gemini downloads
 - Sequential generation queue with per-shot status and retry boundaries
 - Cost confirmation before any paid batch
 - CapCut-ready JSON manifest export
@@ -42,7 +42,9 @@ npm run lint
 npm run build
 ```
 
-The Sites runtime provisions the logical `DB` D1 binding and `MEDIA` R2 binding declared in `.openai/hosting.json`. Drizzle migrations are stored in `drizzle/`.
+The Vercel deployment runs as a standard Next.js application and creates the required `.next` output. Add `GEMINI_API_KEY` in Vercel Project Settings → Environment Variables, then redeploy. Generated Gemini files are downloaded through a server-side proxy so the key is never exposed.
+
+Persistent multi-user project and media history is the next infrastructure step. Connect Neon Postgres and Vercel Blob before treating browser-session data as durable production storage.
 
 ## Cost guard
 
