@@ -157,6 +157,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .selection-tools { display: flex; align-items: center; gap: 12px; color: #848780; font-size: 9px; }
 .selection-tools button { border: 0; background: none; color: #4f534d; cursor: pointer; font-size: 9px; font-weight: 600; }
 .selection-tools .filter-button { min-height: 28px; display: flex; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; background: #f5f3ed; }
+.approval-summary { min-height: 54px; display: flex; align-items: center; gap: 10px; margin-bottom: 15px; padding: 11px 14px; border: 1px solid #d9c7ac; border-radius: 7px; background: #efe5d4; color: #9a6739; }
+.approval-summary.unlocked { border-color: #c8d8c7; background: #e4ece1; color: var(--success); }
+.approval-summary strong, .approval-summary span { display: block; }
+.approval-summary strong { color: #433f37; font-size: 10px; }
+.approval-summary span { margin-top: 3px; color: #777269; font-size: 8px; }
 .shot-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; }
 .shot-card { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); transition: .18s ease; }
 .shot-card:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(47,40,32,.08); }
@@ -175,13 +180,20 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .status-complete { background: #dfeadf; color: #497257; }
 .status-failed { background: #f0deda; color: #a24f43; }
 .status-draft { background: #e8e6e1; color: #7b7e78; }
+.approval-badge { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; padding: 4px 6px; border-radius: 99px; background: #dfeadf; color: #497257; font-size: 7px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .shot-meta { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid #e8e5de; color: #8a8d87; font-size: 8px; }
 .shot-meta span { display: flex; align-items: center; gap: 4px; }
 .edit-prompt { width: 100%; height: 31px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 5px; background: #f5f3ed; color: #4b4f49; cursor: pointer; font-size: 9px; font-weight: 600; }
 .edit-prompt svg:last-child { margin-left: auto; }
+.shot-actions { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+.shot-actions .edit-prompt { grid-column: 1 / -1; }
+.approve-frame, .regenerate-frame { min-height: 29px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; background: #f5f3ed; color: #51554f; cursor: pointer; font-size: 8px; font-weight: 700; }
+.approve-frame { border-color: #bdcfbb; background: #e4ece1; color: #4d7055; }
+.regenerate-frame:disabled { cursor: not-allowed; opacity: .55; }
 
 .shot-visual { position: relative; min-height: 45px; overflow: hidden; background: linear-gradient(130deg, var(--c1), color-mix(in srgb, var(--c2) 55%, var(--c1))); isolation: isolate; }
 .shot-visual::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,255,255,.04), transparent 60%), linear-gradient(0deg, rgba(0,0,0,.24), transparent 50%); }
+.generated-frame-image { z-index: 3; object-fit: cover; }
 .window-glow { position: absolute; top: 0; right: 5%; width: 44%; height: 75%; background: linear-gradient(135deg, color-mix(in srgb, var(--c3) 90%, white), rgba(255,255,255,.05)); clip-path: polygon(20% 0,100% 0,100% 100%,0 82%); opacity: .72; }
 .window-glow::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 31%, rgba(37,32,27,.45) 32% 35%); }
 .figure { position: absolute; z-index: 2; left: 42%; bottom: -2%; width: 27%; height: 87%; transform: translateX(-50%); filter: drop-shadow(9px 8px 10px rgba(0,0,0,.25)); }
@@ -296,6 +308,7 @@ code { padding: 2px 4px; border-radius: 3px; background: #e1ded6; font: 9px "Gei
 .cost-card { width: min(540px, 96vw); }
 .cost-lines { margin-top: 22px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .cost-lines > div, .cost-lines > label { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 13px 15px; border-bottom: 1px solid var(--line); font-size: 10px; }
+.cost-lines > div:last-child { border-bottom: 0; }
 .cost-lines > label { border-bottom: 0; cursor: pointer; }
 .cost-lines span, .cost-lines small { display: block; }
 .cost-lines small { margin-top: 4px; color: #8c8f89; font-size: 8px; }

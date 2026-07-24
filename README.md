@@ -9,8 +9,9 @@ An AI reel production SaaS for creating a consistent 72-second vertical reel as 
 - Mock mode that exercises the full workflow without API spend
 - Four-slot character, wardrobe and room reference library
 - Browser-session project state with server-proxied Gemini downloads
-- Sequential generation queue with per-shot status and retry boundaries
-- Cost confirmation before any paid batch
+- Hard-gated workflow: generate 12 images → review/regenerate → approve → generate videos
+- Sequential image and video queues with per-shot status and retry boundaries
+- Separate cost confirmation before every paid image or video batch
 - CapCut-ready JSON manifest export
 - Responsive desktop and mobile studio UI
 
@@ -46,6 +47,8 @@ The Vercel deployment runs as a standard Next.js application and creates the req
 
 Persistent multi-user project and media history is the next infrastructure step. Connect Neon Postgres and Vercel Blob before treating browser-session data as durable production storage.
 
-## Cost guard
+## Approval and cost guard
 
-The UI currently estimates Omni Flash at `$0.10/second`: twelve 6-second clips are approximately `$7.20` before optional start-frame generation. Pricing is displayed before every batch so clips can be tested one at a time.
+The app generates the twelve start images first. Each image can be approved or regenerated; regenerating a frame revokes its approval. Video generation stays locked until all twelve images are approved, and each approved frame is then attached to its matching six-second video request.
+
+The UI currently estimates reference images at about `$0.067` each and Omni Flash at `$0.10/second`. Twelve images are approximately `$0.80`; twelve six-second clips are approximately `$7.20`. Pricing is displayed separately before either stage starts.

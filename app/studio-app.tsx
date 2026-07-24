@@ -12,6 +12,9 @@ import { useEffect, useRef, useState } from "react";
 import { makeDemoProject, type Project, type Shot } from "../lib/project-template";
 
 type View = "overview" | "project" | "references" | "queue" | "settings";
+type CostStage = "images" | "videos";
+type ActiveQueue = CostStage | null;
+type FrameAsset = { data: string; mimeType: string };
 type ApiStatus = {
   mode: "mock" | "live";
   models: { planner: string; image: string; video: string };
@@ -47,10 +50,11 @@ function BrandMark() {
   return <div className="brand-mark" aria-hidden="true"><span /><span /><span /></div>;
 }
 
-function ShotVisual({ index, status, compact = false }: { index: number; status: Shot["status"]; compact?: boolean }) {
+function ShotVisual({ index, status, frame, compact = false }: { index: number; status: Shot["status"]; frame?: FrameAsset; compact?: boolean }) {
   const palette = colorSets[index % colorSets.length];
   return (
     <div className={cn("shot-visual", compact && "compact")} style={{ "--c1": palette[0], "--c2": palette[1], "--c3": palette[2] } as React.CSSProperties}>
+      {frame?.data && <Image className="generated-frame-image" src={`data:${frame.mimeType};base64,${frame.data}`} alt={`Generated reference frame ${index + 1}`} fill sizes={compact ? "64px" : "(max-width: 820px) 50vw, 25vw"} unoptimized />}
       <div className="window-glow" />
       <div className="figure"><span className="figure-head" /><span className="figure-body" /></div>
       <div className="floor-shadow" />
@@ -77,7 +81,11 @@ export function StudioApp() {
     pricing: { videoPerSecond: 0.1, frameEstimate: 0.067, videoTotal: 7.2, fullPipelineEstimate: 8 },
   });
   const [running, setRunning] = useState(false);
-  const [includeFrames, setIncludeFrames] = useState(false);
+  const [activeQueue, setActiveQueue] = useState<ActiveQueue>(null);
+  const [costStage, setCostStage] = useState<CostStage>("images");
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+  const [frames, setFrames] = useState<Record<string, FrameAsset>>({});
+  const [approvedFrames, setApprovedFrames] = useState<Set<string>>(new Set());
   const [uploads, setUploads] = useState<Record<string, { name: string; url: string }>>({});
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadTarget = useRef<string>("");
@@ -94,9 +102,15 @@ export function StudioApp() {
 
   const completeCount = shots.filter((shot) => shot.status === "complete").length;
   const selectedShots = shots.filter((shot) => selected.has(shot.id));
-  const videoCost = selected.size * 6 * api.pricing.videoPerSecond;
-  const frameCost = includeFrames ? selected.size * api.pricing.frameEstimate : 0;
-  const estimatedRun = videoCost + frameCost;
+  const frameCount = shots.filter((shot) => Boolean(frames[shot.id])).length;
+  const approvedCount = shots.filter((shot) => approvedFrames.has(shot.id)).length;
+  const missingFrames = shots.filter((shot) => !frames[shot.id]);
+  const selectedUnapproved = selectedShots.filter((shot) => frames[shot.id] && !approvedFrames.has(shot.id));
+  const allImagesApproved = approvedCount === shots.length && shots.length > 0;
+  const pendingCount = pendingIds.size;
+  const estimatedRun = costStage === "images"
+    ? pendingCount * api.pricing.frameEstimate
+    : pendingCount * 6 * api.pricing.videoPerSecond;
 
   const nav = [
     { id: "overview" as const, label: "Overview", icon: LayoutDashboard },
@@ -112,6 +126,14 @@ export function StudioApp() {
 
   function notify(message: string) {
     setToast(message);
+  }
+
+  function openCost(stage: CostStage, ids: Iterable<string>) {
+    const next = new Set(ids);
+    if (!next.size || running) return;
+    setCostStage(stage);
+    setPendingIds(next);
+    setCostOpen(true);
   }
 
   function toggleShot(id: string) {
@@ -133,12 +155,16 @@ export function StudioApp() {
       setProject(bundle.project);
       setShots(bundle.shots);
       setSelected(new Set(bundle.shots.map((shot: Shot) => shot.id)));
+      setFrames({});
+      setApprovedFrames(new Set());
       notify("12-shot plan created");
     } catch {
       const fallback = makeDemoProject();
       setProject({ ...fallback.project, title: String(payload.title || fallback.project.title), concept: String(payload.concept || fallback.project.concept) });
       setShots(fallback.shots);
       setSelected(new Set(fallback.shots.map((shot) => shot.id)));
+      setFrames({});
+      setApprovedFrames(new Set());
       notify("Project created in preview mode");
     }
     setCreateOpen(false);
@@ -155,47 +181,97 @@ export function StudioApp() {
     notify("Prompt changes saved");
   }
 
-  async function runQueue() {
-    if (!selected.size || running) return;
+  async function runImageQueue() {
+    if (!pendingIds.size || running) return;
+    const targets = shots.filter((shot) => pendingIds.has(shot.id));
     setCostOpen(false);
     setRunning(true);
+    setActiveQueue("images");
     setView("queue");
-    setShots((current) => current.map((shot) => selected.has(shot.id) ? { ...shot, status: "queued" } : shot));
+    setApprovedFrames((current) => {
+      const next = new Set(current);
+      targets.forEach((shot) => next.delete(shot.id));
+      return next;
+    });
+    setShots((current) => current.map((shot) => pendingIds.has(shot.id) ? { ...shot, status: "queued", videoAssetId: null } : shot));
 
-    for (const target of selectedShots) {
+    for (const target of targets) {
       setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "generating", errorMessage: null } : shot));
       if (api.mode === "mock" || project.id.startsWith("demo")) {
-        await new Promise((resolve) => window.setTimeout(resolve, includeFrames ? 980 : 760));
-        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "complete" } : shot));
-        if (!project.id.startsWith("demo")) {
-          await fetch(`/api/shots/${target.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "complete" }) }).catch(() => undefined);
-        }
+        await new Promise((resolve) => window.setTimeout(resolve, 620));
+        setFrames((current) => ({ ...current, [target.id]: { data: "", mimeType: "image/mock" } }));
+        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "ready", frameAssetId: "mock-frame", videoAssetId: null } : shot));
         continue;
       }
       try {
-        let generatedReference: { data: string; mimeType: string } | undefined;
-        if (includeFrames) {
-          const frameResponse = await fetch("/api/generate", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ projectId: project.id, shotId: target.id, kind: "frame", prompt: target.framePrompt }),
-          });
-          const frameResult = await frameResponse.json();
-          if (!frameResponse.ok) throw new Error(frameResult.error || "Frame generation failed");
-          generatedReference = frameResult.asset;
-        }
         const response = await fetch("/api/generate", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ projectId: project.id, shotId: target.id, kind: "video", prompt: target.videoPrompt, reference: generatedReference }),
+          body: JSON.stringify({ projectId: project.id, shotId: target.id, kind: "frame", prompt: target.framePrompt }),
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "Generation failed");
-        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "complete", videoAssetId: result.assetId } : shot));
+        if (!response.ok || !result.asset) throw new Error(result.error || "Image generation failed");
+        setFrames((current) => ({ ...current, [target.id]: result.asset }));
+        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "ready", frameAssetId: result.assetId, videoAssetId: null } : shot));
       } catch (error) {
-        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "failed", errorMessage: error instanceof Error ? error.message : "Generation failed" } : shot));
+        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "failed", errorMessage: error instanceof Error ? error.message : "Image generation failed" } : shot));
       }
     }
     setRunning(false);
-    notify(api.mode === "mock" ? "Mock batch completed — add your key for real clips" : "Generation batch completed");
+    setActiveQueue(null);
+    setPendingIds(new Set());
+    setView("project");
+    notify(api.mode === "mock" ? "Mock images are ready for approval" : "Images are ready for review");
+  }
+
+  function approveImage(id: string) {
+    if (!frames[id]) return;
+    setApprovedFrames((current) => new Set(current).add(id));
+    notify("Image approved");
+  }
+
+  function approveSelectedImages() {
+    if (!selectedUnapproved.length) return;
+    setApprovedFrames((current) => {
+      const next = new Set(current);
+      selectedUnapproved.forEach((shot) => next.add(shot.id));
+      return next;
+    });
+    notify(`${selectedUnapproved.length} image${selectedUnapproved.length === 1 ? "" : "s"} approved`);
+  }
+
+  async function runVideoQueue() {
+    if (!pendingIds.size || running || !allImagesApproved) return;
+    const targets = shots.filter((shot) => pendingIds.has(shot.id) && approvedFrames.has(shot.id) && frames[shot.id]);
+    if (!targets.length) return;
+    setCostOpen(false);
+    setRunning(true);
+    setActiveQueue("videos");
+    setView("queue");
+    setShots((current) => current.map((shot) => targets.some((target) => target.id === shot.id) ? { ...shot, status: "queued" } : shot));
+
+    for (const target of targets) {
+      setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "generating", errorMessage: null } : shot));
+      if (api.mode === "mock" || project.id.startsWith("demo")) {
+        await new Promise((resolve) => window.setTimeout(resolve, 760));
+        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "complete", videoAssetId: "mock-video" } : shot));
+        continue;
+      }
+      try {
+        const response = await fetch("/api/generate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: project.id, shotId: target.id, kind: "video", prompt: target.videoPrompt, reference: frames[target.id] }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Video generation failed");
+        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "complete", videoAssetId: result.assetId } : shot));
+      } catch (error) {
+        setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "failed", errorMessage: error instanceof Error ? error.message : "Video generation failed" } : shot));
+      }
+    }
+    setRunning(false);
+    setActiveQueue(null);
+    setPendingIds(new Set());
+    notify(api.mode === "mock" ? "Mock videos completed — your approval gate works" : "Video batch completed");
   }
 
   function exportManifest() {
@@ -247,8 +323,8 @@ export function StudioApp() {
       <div className="sidebar-project">
         <span className="nav-label">Current reel</span>
         <button className="project-mini" onClick={() => go("project")}>
-          <ShotVisual index={2} status="ready" compact />
-          <span><strong>{project.title}</strong><small>{completeCount}/12 clips ready</small></span>
+          <ShotVisual index={2} status="ready" frame={frames[shots[2]?.id]} compact />
+          <span><strong>{project.title}</strong><small>{approvedCount}/12 images approved</small></span>
           <MoreHorizontal size={16} />
         </button>
       </div>
@@ -275,27 +351,50 @@ export function StudioApp() {
           </div>
         </header>
 
-        {view === "overview" && <Overview project={project} shots={shots} api={api} onOpen={() => go("project")} onCreate={() => setCreateOpen(true)} onSettings={() => go("settings")} />}
+        {view === "overview" && <Overview project={project} shots={shots} frames={frames} approvedCount={approvedCount} api={api} onOpen={() => go("project")} onCreate={() => setCreateOpen(true)} onSettings={() => go("settings")} />}
         {view === "project" && (
           <section className="page-content project-page">
             <div className="page-heading project-heading">
               <div><span className="eyebrow">12-shot workspace</span><h1>{project.title}</h1><p>{project.concept}</p></div>
-              <div className="heading-actions"><button className="button secondary" onClick={exportManifest}><Download size={16} />Export</button><button className="button primary" onClick={() => setCostOpen(true)} disabled={!selected.size}><Sparkles size={16} />Generate {selected.size} clips</button></div>
+              <div className="heading-actions">
+                <button className="button secondary" onClick={exportManifest}><Download size={16} />Export</button>
+                {missingFrames.length > 0 ? (
+                  <button className="button primary" onClick={() => openCost("images", missingFrames.map((shot) => shot.id))} disabled={running}><ImageIcon size={16} />Generate {missingFrames.length} images</button>
+                ) : !allImagesApproved ? (
+                  <button className="button primary" onClick={approveSelectedImages} disabled={!selectedUnapproved.length || running}><CheckCircle2 size={16} />Approve {selectedUnapproved.length} selected</button>
+                ) : (
+                  <button className="button primary" onClick={() => openCost("videos", selectedShots.map((shot) => shot.id))} disabled={!selected.size || running}><Film size={16} />Generate {selected.size} videos</button>
+                )}
+              </div>
             </div>
             <div className="studio-toolbar">
-              <div className="workflow-steps"><span className="done"><Check size={12} />Brief</span><i /><span className="done"><Check size={12} />Shot plan</span><i /><span className="current">3</span><b>Generate</b><i /><span>4</span><b>Export</b></div>
-              <div className="selection-tools"><button onClick={() => setSelected(new Set(shots.map((shot) => shot.id)))}>Select all</button><span>{selected.size} selected</span><button className="filter-button"><SlidersHorizontal size={14} />Filter</button></div>
+              <div className="workflow-steps">
+                <span className="done"><Check size={12} /></span><b>Brief</b><i />
+                <span className={frameCount === shots.length ? "done" : "current"}>{frameCount === shots.length ? <Check size={12} /> : "2"}</span><b>Images</b><i />
+                <span className={allImagesApproved ? "done" : frameCount === shots.length ? "current" : undefined}>{allImagesApproved ? <Check size={12} /> : "3"}</span><b>Approve</b><i />
+                <span className={completeCount === shots.length ? "done" : allImagesApproved ? "current" : undefined}>{completeCount === shots.length ? <Check size={12} /> : "4"}</span><b>Videos</b><i />
+                <span className={completeCount === shots.length ? "current" : undefined}>5</span><b>Export</b>
+              </div>
+              <div className="selection-tools"><button onClick={() => setSelected(new Set(shots.map((shot) => shot.id)))}>Select all</button><span>{frameCount}/12 images · {approvedCount}/12 approved</span><button className="filter-button"><SlidersHorizontal size={14} />Filter</button></div>
+            </div>
+            <div className={cn("approval-summary", allImagesApproved && "unlocked")}>
+              {allImagesApproved ? <CheckCircle2 size={17} /> : <ImageIcon size={17} />}
+              <div><strong>{allImagesApproved ? "Video generation unlocked" : frameCount < shots.length ? "Stage 1 — Generate all images" : "Stage 2 — Review and approve"}</strong><span>{allImagesApproved ? "Every approved image will be used as the visual reference for its six-second clip." : frameCount < shots.length ? "Videos remain locked until all twelve images are generated and approved." : "Approve each image, or regenerate any frame that does not match your direction."}</span></div>
             </div>
             <div className="shot-grid">
               {shots.map((shot, index) => (
                 <article className={cn("shot-card", selected.has(shot.id) && "selected")} key={shot.id}>
                   <button className="select-check" onClick={() => toggleShot(shot.id)} aria-label={`Select shot ${shot.position}`}>{selected.has(shot.id) && <Check size={13} />}</button>
-                  <ShotVisual index={index} status={shot.status} />
+                  <ShotVisual index={index} status={shot.status} frame={frames[shot.id]} />
                   <div className="shot-card-body">
-                    <div className="shot-card-title"><div><small>Shot {String(shot.position).padStart(2, "0")}</small><h3>{shot.title}</h3></div><StatusBadge status={shot.status} /></div>
+                    <div className="shot-card-title"><div><small>Shot {String(shot.position).padStart(2, "0")}</small><h3>{shot.title}</h3></div>{approvedFrames.has(shot.id) ? <span className="approval-badge"><Check size={11} />Approved</span> : <StatusBadge status={shot.status} />}</div>
                     <p>{shot.motion}</p>
                     <div className="shot-meta"><span><Clock3 size={13} />6 sec</span><span><Film size={13} />9:16</span></div>
-                    <button className="edit-prompt" onClick={() => setEditingShot(shot)}><WandSparkles size={14} />Edit prompts<ArrowRight size={14} /></button>
+                    <div className="shot-actions">
+                      <button className="edit-prompt" onClick={() => setEditingShot(shot)}><WandSparkles size={14} />Edit prompts</button>
+                      {frames[shot.id] && !approvedFrames.has(shot.id) && <button className="approve-frame" onClick={() => approveImage(shot.id)}><Check size={14} />Approve</button>}
+                      {frames[shot.id] && <button className="regenerate-frame" onClick={() => openCost("images", [shot.id])} disabled={running}><RefreshCw size={14} />Regenerate</button>}
+                    </div>
                   </div>
                 </article>
               ))}
@@ -303,19 +402,19 @@ export function StudioApp() {
           </section>
         )}
         {view === "references" && <References uploads={uploads} chooseUpload={chooseUpload} onBack={() => go("project")} />}
-        {view === "queue" && <QueueView shots={shots} running={running} api={api} onRun={() => setCostOpen(true)} onExport={exportManifest} />}
+        {view === "queue" && <QueueView shots={shots} frames={frames} approvedFrames={approvedFrames} activeQueue={activeQueue} running={running} api={api} onBack={() => go("project")} onRunVideos={() => openCost("videos", selectedShots.map((shot) => shot.id))} onExport={exportManifest} />}
         {view === "settings" && <SettingsView api={api} notify={notify} />}
       </main>
 
       {editingShot && <PromptDrawer shot={editingShot} onChange={setEditingShot} onClose={() => setEditingShot(null)} onSave={saveShot} />}
       {createOpen && <CreateModal onClose={() => setCreateOpen(false)} onSubmit={createProject} />}
-      {costOpen && <CostModal count={selected.size} videoCost={videoCost} frameCost={frameCost} total={estimatedRun} includeFrames={includeFrames} setIncludeFrames={setIncludeFrames} api={api} onClose={() => setCostOpen(false)} onConfirm={runQueue} />}
+      {costOpen && <CostModal stage={costStage} count={pendingCount} total={estimatedRun} api={api} onClose={() => setCostOpen(false)} onConfirm={costStage === "images" ? runImageQueue : runVideoQueue} />}
       {toast && <div className="toast"><CheckCircle2 size={17} />{toast}</div>}
     </div>
   );
 }
 
-function Overview({ project, shots, api, onOpen, onCreate, onSettings }: { project: Project; shots: Shot[]; api: ApiStatus; onOpen: () => void; onCreate: () => void; onSettings: () => void }) {
+function Overview({ project, shots, frames, approvedCount, api, onOpen, onCreate, onSettings }: { project: Project; shots: Shot[]; frames: Record<string, FrameAsset>; approvedCount: number; api: ApiStatus; onOpen: () => void; onCreate: () => void; onSettings: () => void }) {
   const complete = shots.filter((shot) => shot.status === "complete").length;
   return (
     <section className="page-content overview-page">
@@ -325,7 +424,7 @@ function Overview({ project, shots, api, onOpen, onCreate, onSettings }: { proje
         <div className="hero-reel"><div className="reel-stack back-two"><ShotVisual index={7} status="ready" /></div><div className="reel-stack back-one"><ShotVisual index={4} status="ready" /></div><div className="reel-stack front"><ShotVisual index={2} status="ready" /><div className="reel-play"><Play size={18} fill="currentColor" /></div></div><span className="reel-tag">9:16 · 12 × 6s</span></div>
       </div>
       <div className="metric-grid">
-        <div className="metric-card"><span className="metric-icon ochre"><Clapperboard size={18} /></span><div><small>Current reel</small><strong>{complete}<i>/12</i></strong><p>clips generated</p></div></div>
+        <div className="metric-card"><span className="metric-icon ochre"><ImageIcon size={18} /></span><div><small>Image approval</small><strong>{approvedCount}<i>/12</i></strong><p>frames approved</p></div></div>
         <div className="metric-card"><span className="metric-icon sage"><Clock3 size={18} /></span><div><small>Final sequence</small><strong>72<i> sec</i></strong><p>before CapCut edits</p></div></div>
         <div className="metric-card"><span className="metric-icon clay"><CircleDollarSign size={18} /></span><div><small>Omni Flash estimate</small><strong>{formatMoney(api.pricing.videoTotal)}</strong><p>video only, full batch</p></div></div>
         <div className="metric-card"><span className="metric-icon blue"><Gauge size={18} /></span><div><small>Provider mode</small><strong className="text-metric">{api.mode === "live" ? "Live" : "Mock"}</strong><p>{api.mode === "live" ? "Gemini connected" : "zero-cost preview"}</p></div></div>
@@ -333,8 +432,8 @@ function Overview({ project, shots, api, onOpen, onCreate, onSettings }: { proje
       <div className="overview-grid">
         <article className="panel current-project-panel">
           <div className="panel-head"><div><span className="eyebrow">Continue working</span><h3>{project.title}</h3></div><button className="icon-button"><MoreHorizontal size={18} /></button></div>
-          <div className="project-strip">{shots.slice(0, 6).map((shot, index) => <ShotVisual key={shot.id} index={index} status={shot.status} compact />)}</div>
-          <div className="project-progress"><div><span>Shot plan complete</span><strong>{complete}/12 clips ready</strong></div><div className="progress-track"><span style={{ width: `${Math.max(10, complete / 12 * 100)}%` }} /></div></div>
+          <div className="project-strip">{shots.slice(0, 6).map((shot, index) => <ShotVisual key={shot.id} index={index} status={shot.status} frame={frames[shot.id]} compact />)}</div>
+          <div className="project-progress"><div><span>Images before videos</span><strong>{approvedCount}/12 frames approved · {complete}/12 clips ready</strong></div><div className="progress-track"><span style={{ width: `${Math.max(10, approvedCount / 12 * 100)}%` }} /></div></div>
           <button className="button secondary full" onClick={onOpen}>Continue in shot studio<ArrowRight size={16} /></button>
         </article>
         <article className="panel stack-panel"><div className="panel-head"><div><span className="eyebrow">Your production stack</span><h3>One key, three jobs</h3></div><span className={cn("connection-badge", api.mode === "live" && "live")}><span />{api.mode === "live" ? "Connected" : "Preview"}</span></div>
@@ -364,12 +463,15 @@ function References({ uploads, chooseUpload, onBack }: { uploads: Record<string,
   </section>;
 }
 
-function QueueView({ shots, running, api, onRun, onExport }: { shots: Shot[]; running: boolean; api: ApiStatus; onRun: () => void; onExport: () => void }) {
+function QueueView({ shots, frames, approvedFrames, activeQueue, running, api, onBack, onRunVideos, onExport }: { shots: Shot[]; frames: Record<string, FrameAsset>; approvedFrames: Set<string>; activeQueue: ActiveQueue; running: boolean; api: ApiStatus; onBack: () => void; onRunVideos: () => void; onExport: () => void }) {
   const completed = shots.filter((shot) => shot.status === "complete").length;
+  const images = shots.filter((shot) => frames[shot.id]).length;
+  const approved = shots.filter((shot) => approvedFrames.has(shot.id)).length;
   const active = shots.find((shot) => shot.status === "generating");
-  return <section className="page-content"><div className="page-heading queue-heading"><div><span className="eyebrow">Batch control</span><h1>Generation queue</h1><p>Clips run one at a time to keep retries simple and spending visible.</p></div><div className="heading-actions"><button className="button secondary" onClick={onExport}><Download size={16} />Manifest</button><button className="button primary" onClick={onRun} disabled={running}><Play size={16} />{completed ? "Run selected again" : "Start batch"}</button></div></div>
-    <div className="queue-summary"><div className="queue-ring" style={{ "--progress": `${completed / 12 * 360}deg` } as React.CSSProperties}><span>{completed}<small>/12</small></span></div><div><span className="eyebrow">Batch progress</span><h2>{running ? `Generating shot ${active?.position ?? "…"}` : completed === 12 ? "All clips are ready" : "Ready when you are"}</h2><p>{api.mode === "mock" ? "Mock mode simulates the entire queue without spending API credit." : "Completed clips are available through a private server-side Gemini download proxy."}</p></div><div className="queue-cost"><small>Video estimate</small><strong>{formatMoney(api.pricing.videoTotal)}</strong><span>12 clips · 72 seconds</span></div></div>
-    <div className="queue-table"><div className="queue-row queue-header"><span>Shot</span><span>Prompt</span><span>Model</span><span>Status</span><span>Cost</span></div>{shots.map((shot, index) => <div className="queue-row" key={shot.id}><span className="queue-shot"><ShotVisual index={index} status={shot.status} compact /><b>{String(shot.position).padStart(2, "0")}</b></span><span><strong>{shot.title}</strong><small>{shot.motion}</small></span><span className="mono">omni-flash</span><span><StatusBadge status={shot.status} /></span><span className="mono">$0.60</span></div>)}</div>
+  const progress = activeQueue === "images" ? images : completed;
+  return <section className="page-content"><div className="page-heading queue-heading"><div><button className="back-link" onClick={onBack}><ArrowLeft size={14} />Shot studio</button><span className="eyebrow">Two-stage batch control</span><h1>Generation queue</h1><p>Images run first. Video generation stays locked until every frame is approved.</p></div><div className="heading-actions"><button className="button secondary" onClick={onExport}><Download size={16} />Manifest</button><button className="button primary" onClick={onRunVideos} disabled={running || approved !== shots.length}><Play size={16} />Generate approved videos</button></div></div>
+    <div className="queue-summary"><div className="queue-ring" style={{ "--progress": `${progress / 12 * 360}deg` } as React.CSSProperties}><span>{progress}<small>/12</small></span></div><div><span className="eyebrow">{activeQueue === "images" ? "Image batch" : activeQueue === "videos" ? "Video batch" : "Workflow status"}</span><h2>{running ? `${activeQueue === "images" ? "Creating image" : "Creating video"} ${active?.position ?? "…"}` : completed === 12 ? "All clips are ready" : approved === 12 ? "Images approved — videos unlocked" : images === 12 ? "Review images in the shot studio" : "Generate all twelve images first"}</h2><p>{api.mode === "mock" ? "Mock mode simulates both stages without spending API credit." : "Each approved image is passed to Omni Flash as that clip’s visual reference."}</p></div><div className="queue-cost"><small>{activeQueue === "images" ? "Image estimate" : "Video estimate"}</small><strong>{formatMoney(activeQueue === "images" ? api.pricing.frameEstimate * 12 : api.pricing.videoTotal)}</strong><span>{images}/12 images · {approved}/12 approved</span></div></div>
+    <div className="queue-table"><div className="queue-row queue-header"><span>Shot</span><span>Prompt</span><span>Approval</span><span>Status</span><span>Cost</span></div>{shots.map((shot, index) => <div className="queue-row" key={shot.id}><span className="queue-shot"><ShotVisual index={index} status={shot.status} frame={frames[shot.id]} compact /><b>{String(shot.position).padStart(2, "0")}</b></span><span><strong>{shot.title}</strong><small>{shot.motion}</small></span><span>{approvedFrames.has(shot.id) ? <span className="approval-badge"><Check size={11} />Approved</span> : frames[shot.id] ? "Review needed" : "Image needed"}</span><span><StatusBadge status={shot.status} /></span><span className="mono">{activeQueue === "images" ? "~$0.07" : "$0.60"}</span></div>)}</div>
   </section>;
 }
 
@@ -412,11 +514,12 @@ function CreateModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (ev
   </form></div>;
 }
 
-function CostModal({ count, videoCost, frameCost, total, includeFrames, setIncludeFrames, api, onClose, onConfirm }: { count: number; videoCost: number; frameCost: number; total: number; includeFrames: boolean; setIncludeFrames: (value: boolean) => void; api: ApiStatus; onClose: () => void; onConfirm: () => void }) {
+function CostModal({ stage, count, total, api, onClose, onConfirm }: { stage: CostStage; count: number; total: number; api: ApiStatus; onClose: () => void; onConfirm: () => void }) {
+  const isImages = stage === "images";
   return <div className="modal-wrap"><button className="modal-backdrop" onClick={onClose} aria-label="Close" /><div className="modal-card cost-card"><div className="modal-head"><div><span className="eyebrow">Cost checkpoint</span><h2>Review before generating.</h2><p>No paid request is sent until you confirm.</p></div><button className="icon-button" onClick={onClose}><X size={19} /></button></div>
-    <div className="cost-lines"><div><span>{count} Omni Flash clips<small>{count * 6} seconds × $0.10</small></span><strong>{formatMoney(videoCost)}</strong></div><label><span><input type="checkbox" checked={includeFrames} onChange={(event) => setIncludeFrames(event.target.checked)} />Generate matching start frames<small>{count} images × ~$0.067</small></span><strong>{formatMoney(frameCost)}</strong></label></div>
+    <div className="cost-lines"><div><span>{count} {isImages ? "Nano Banana reference images" : "Omni Flash clips"}<small>{isImages ? `${count} images × ~${formatMoney(api.pricing.frameEstimate)}` : `${count * 6} seconds × ${formatMoney(api.pricing.videoPerSecond)}`}</small></span><strong>{formatMoney(total)}</strong></div><div><span>{isImages ? "Approval gate remains active" : "Approved images attached"}<small>{isImages ? "Review or regenerate every image before video" : "Each clip uses its approved frame as reference"}</small></span><strong>{isImages ? "Stage 1" : "Stage 3"}</strong></div></div>
     <div className="cost-total"><span>Estimated batch total<small>Actual Google billing can vary</small></span><strong>{formatMoney(total)}</strong></div>
-    {api.mode === "mock" && <div className="mock-banner"><Sparkles size={17} /><div><strong>This run costs $0</strong><p>You are in mock mode. We’ll simulate all {count} jobs so you can test the workflow.</p></div></div>}
-    <div className="modal-actions"><button className="button secondary" onClick={onClose}>Go back</button><button className="button primary" onClick={onConfirm}>{api.mode === "mock" ? "Run mock batch" : `Confirm ${formatMoney(total)} batch`}<ArrowRight size={16} /></button></div>
+    {api.mode === "mock" && <div className="mock-banner"><Sparkles size={17} /><div><strong>This run costs $0</strong><p>You are in mock mode. We’ll simulate all {count} {isImages ? "images" : "videos"} so you can test the workflow.</p></div></div>}
+    <div className="modal-actions"><button className="button secondary" onClick={onClose}>Go back</button><button className="button primary" onClick={onConfirm}>{api.mode === "mock" ? `Run mock ${isImages ? "images" : "videos"}` : `Confirm ${formatMoney(total)} ${isImages ? "images" : "videos"}`}<ArrowRight size={16} /></button></div>
   </div></div>;
 }
