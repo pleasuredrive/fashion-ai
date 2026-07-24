@@ -12,6 +12,7 @@ An AI reel production SaaS for creating a consistent 72-second vertical reel as 
 - Hard-gated workflow: generate 12 images → review/regenerate → approve → generate videos
 - Sequential image and video queues with per-shot status and retry boundaries
 - Separate cost confirmation before every paid image or video batch
+- A visible stop control that prevents remaining jobs from starting and keeps completed work
 - CapCut-ready JSON manifest export
 - Responsive desktop and mobile studio UI
 

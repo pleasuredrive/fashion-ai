@@ -27,7 +27,7 @@ export async function POST(request: Request) {
 
   try {
     if (kind === "frame") {
-      const output = await generateFrame(prompt);
+      const output = await generateFrame(prompt, [], request.signal);
       if (!output.data) throw new Error("Gemini returned no inline frame data");
       return Response.json({
         mode: "live",
@@ -42,7 +42,7 @@ export async function POST(request: Request) {
     const reference = payload.reference?.data && payload.reference.mimeType
       ? { data: payload.reference.data, mimeType: payload.reference.mimeType }
       : undefined;
-    const output = await generateVideo(prompt, reference);
+    const output = await generateVideo(prompt, reference, request.signal);
     const fileId = getFileId(output.uri);
     if (!fileId) throw new Error("Gemini returned no downloadable video file");
     return Response.json({

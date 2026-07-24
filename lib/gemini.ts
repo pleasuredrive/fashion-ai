@@ -20,11 +20,12 @@ export function getGeminiApiKey() {
   return key;
 }
 
-async function googleRequest(path: string, body: unknown) {
+async function googleRequest(path: string, body: unknown, signal?: AbortSignal) {
   const response = await fetch(`${API_ROOT}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": getGeminiApiKey() },
     body: JSON.stringify(body),
+    signal,
   });
   if (!response.ok) {
     const detail = await response.text();
@@ -43,18 +44,18 @@ function outputBlock(payload: Record<string, unknown>, type: "image" | "video") 
   throw new Error(`Gemini returned no ${type} output`);
 }
 
-export async function generateFrame(prompt: string, references: Array<{ data: string; mimeType: string }> = []) {
+export async function generateFrame(prompt: string, references: Array<{ data: string; mimeType: string }> = [], signal?: AbortSignal) {
   const input: Array<Record<string, unknown>> = references.map((ref) => ({ type: "image", data: ref.data, mime_type: ref.mimeType }));
   input.push({ type: "text", text: prompt });
   const payload = await googleRequest("/interactions", {
     model: GEMINI_MODELS.image,
     input,
     response_format: { type: "image", aspect_ratio: "9:16", image_size: "1K" },
-  });
+  }, signal);
   return outputBlock(payload, "image") as { data?: string; uri?: string; mime_type?: string };
 }
 
-export async function generateVideo(prompt: string, reference?: { data: string; mimeType: string }) {
+export async function generateVideo(prompt: string, reference?: { data: string; mimeType: string }, signal?: AbortSignal) {
   const input = reference
     ? [
         { type: "image", data: reference.data, mime_type: reference.mimeType },
@@ -69,7 +70,7 @@ export async function generateVideo(prompt: string, reference?: { data: string; 
     background: false,
     store: false,
     stream: false,
-  });
+  }, signal);
   return outputBlock(payload, "video") as { data?: string; uri?: string; mime_type?: string };
 }
 

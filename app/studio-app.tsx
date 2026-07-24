@@ -5,7 +5,7 @@ import {
   CircleDollarSign, Clapperboard, Clock3, Copy, Download, FileJson, Film, FolderOpen,
   Gauge, Image as ImageIcon, KeyRound, LayoutDashboard, LoaderCircle, Menu, MoreHorizontal,
   PackageCheck, Play, Plus, RefreshCw, Save, Settings, SlidersHorizontal, Sparkles,
-  Upload, WandSparkles, X, Zap,
+  Square, Upload, WandSparkles, X, Zap,
 } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
@@ -81,6 +81,7 @@ export function StudioApp() {
     pricing: { videoPerSecond: 0.1, frameEstimate: 0.067, videoTotal: 7.2, fullPipelineEstimate: 8 },
   });
   const [running, setRunning] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [activeQueue, setActiveQueue] = useState<ActiveQueue>(null);
   const [costStage, setCostStage] = useState<CostStage>("images");
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
@@ -89,6 +90,8 @@ export function StudioApp() {
   const [uploads, setUploads] = useState<Record<string, { name: string; url: string }>>({});
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadTarget = useRef<string>("");
+  const stopRequested = useRef(false);
+  const activeController = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetch("/api/status").then((res) => res.json()).then(setApi).catch(() => undefined);
@@ -186,6 +189,8 @@ export function StudioApp() {
     const targets = shots.filter((shot) => pendingIds.has(shot.id));
     setCostOpen(false);
     setRunning(true);
+    setStopping(false);
+    stopRequested.current = false;
     setActiveQueue("images");
     setView("queue");
     setApprovedFrames((current) => {
@@ -196,31 +201,42 @@ export function StudioApp() {
     setShots((current) => current.map((shot) => pendingIds.has(shot.id) ? { ...shot, status: "queued", videoAssetId: null } : shot));
 
     for (const target of targets) {
+      if (stopRequested.current) break;
       setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "generating", errorMessage: null } : shot));
-      if (api.mode === "mock" || project.id.startsWith("demo")) {
+      if (api.mode === "mock") {
         await new Promise((resolve) => window.setTimeout(resolve, 620));
+        if (stopRequested.current) break;
         setFrames((current) => ({ ...current, [target.id]: { data: "", mimeType: "image/mock" } }));
         setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "ready", frameAssetId: "mock-frame", videoAssetId: null } : shot));
         continue;
       }
       try {
+        const controller = new AbortController();
+        activeController.current = controller;
         const response = await fetch("/api/generate", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ projectId: project.id, shotId: target.id, kind: "frame", prompt: target.framePrompt }),
+          signal: controller.signal,
         });
         const result = await response.json();
         if (!response.ok || !result.asset) throw new Error(result.error || "Image generation failed");
         setFrames((current) => ({ ...current, [target.id]: result.asset }));
         setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "ready", frameAssetId: result.assetId, videoAssetId: null } : shot));
       } catch (error) {
+        if ((error as { name?: string }).name === "AbortError" || stopRequested.current) break;
         setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "failed", errorMessage: error instanceof Error ? error.message : "Image generation failed" } : shot));
+      } finally {
+        activeController.current = null;
       }
     }
+    const wasStopped = stopRequested.current;
+    setShots((current) => current.map((shot) => shot.status === "queued" || shot.status === "generating" ? { ...shot, status: "ready", errorMessage: null } : shot));
     setRunning(false);
+    setStopping(false);
     setActiveQueue(null);
     setPendingIds(new Set());
     setView("project");
-    notify(api.mode === "mock" ? "Mock images are ready for approval" : "Images are ready for review");
+    notify(wasStopped ? "Generation stopped — completed images were kept" : api.mode === "mock" ? "Mock images are ready for approval" : "Images are ready for review");
   }
 
   function approveImage(id: string) {
@@ -245,33 +261,54 @@ export function StudioApp() {
     if (!targets.length) return;
     setCostOpen(false);
     setRunning(true);
+    setStopping(false);
+    stopRequested.current = false;
     setActiveQueue("videos");
     setView("queue");
     setShots((current) => current.map((shot) => targets.some((target) => target.id === shot.id) ? { ...shot, status: "queued" } : shot));
 
     for (const target of targets) {
+      if (stopRequested.current) break;
       setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "generating", errorMessage: null } : shot));
-      if (api.mode === "mock" || project.id.startsWith("demo")) {
+      if (api.mode === "mock") {
         await new Promise((resolve) => window.setTimeout(resolve, 760));
+        if (stopRequested.current) break;
         setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "complete", videoAssetId: "mock-video" } : shot));
         continue;
       }
       try {
+        const controller = new AbortController();
+        activeController.current = controller;
         const response = await fetch("/api/generate", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ projectId: project.id, shotId: target.id, kind: "video", prompt: target.videoPrompt, reference: frames[target.id] }),
+          signal: controller.signal,
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Video generation failed");
         setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "complete", videoAssetId: result.assetId } : shot));
       } catch (error) {
+        if ((error as { name?: string }).name === "AbortError" || stopRequested.current) break;
         setShots((current) => current.map((shot) => shot.id === target.id ? { ...shot, status: "failed", errorMessage: error instanceof Error ? error.message : "Video generation failed" } : shot));
+      } finally {
+        activeController.current = null;
       }
     }
+    const wasStopped = stopRequested.current;
+    setShots((current) => current.map((shot) => shot.status === "queued" || shot.status === "generating" ? { ...shot, status: "ready", errorMessage: null } : shot));
     setRunning(false);
+    setStopping(false);
     setActiveQueue(null);
     setPendingIds(new Set());
-    notify(api.mode === "mock" ? "Mock videos completed — your approval gate works" : "Video batch completed");
+    notify(wasStopped ? "Generation stopped — completed videos were kept" : api.mode === "mock" ? "Mock videos completed — your approval gate works" : "Video batch completed");
+  }
+
+  function stopQueue() {
+    if (!running || stopping) return;
+    setStopping(true);
+    stopRequested.current = true;
+    activeController.current?.abort();
+    notify("Stopping generation…");
   }
 
   function exportManifest() {
@@ -402,7 +439,7 @@ export function StudioApp() {
           </section>
         )}
         {view === "references" && <References uploads={uploads} chooseUpload={chooseUpload} onBack={() => go("project")} />}
-        {view === "queue" && <QueueView shots={shots} frames={frames} approvedFrames={approvedFrames} activeQueue={activeQueue} running={running} api={api} onBack={() => go("project")} onRunVideos={() => openCost("videos", selectedShots.map((shot) => shot.id))} onExport={exportManifest} />}
+        {view === "queue" && <QueueView shots={shots} frames={frames} approvedFrames={approvedFrames} activeQueue={activeQueue} running={running} stopping={stopping} api={api} onBack={() => go("project")} onStop={stopQueue} onRunVideos={() => openCost("videos", selectedShots.map((shot) => shot.id))} onExport={exportManifest} />}
         {view === "settings" && <SettingsView api={api} notify={notify} />}
       </main>
 
@@ -463,14 +500,14 @@ function References({ uploads, chooseUpload, onBack }: { uploads: Record<string,
   </section>;
 }
 
-function QueueView({ shots, frames, approvedFrames, activeQueue, running, api, onBack, onRunVideos, onExport }: { shots: Shot[]; frames: Record<string, FrameAsset>; approvedFrames: Set<string>; activeQueue: ActiveQueue; running: boolean; api: ApiStatus; onBack: () => void; onRunVideos: () => void; onExport: () => void }) {
+function QueueView({ shots, frames, approvedFrames, activeQueue, running, stopping, api, onBack, onStop, onRunVideos, onExport }: { shots: Shot[]; frames: Record<string, FrameAsset>; approvedFrames: Set<string>; activeQueue: ActiveQueue; running: boolean; stopping: boolean; api: ApiStatus; onBack: () => void; onStop: () => void; onRunVideos: () => void; onExport: () => void }) {
   const completed = shots.filter((shot) => shot.status === "complete").length;
   const images = shots.filter((shot) => frames[shot.id]).length;
   const approved = shots.filter((shot) => approvedFrames.has(shot.id)).length;
   const active = shots.find((shot) => shot.status === "generating");
   const progress = activeQueue === "images" ? images : completed;
-  return <section className="page-content"><div className="page-heading queue-heading"><div><button className="back-link" onClick={onBack}><ArrowLeft size={14} />Shot studio</button><span className="eyebrow">Two-stage batch control</span><h1>Generation queue</h1><p>Images run first. Video generation stays locked until every frame is approved.</p></div><div className="heading-actions"><button className="button secondary" onClick={onExport}><Download size={16} />Manifest</button><button className="button primary" onClick={onRunVideos} disabled={running || approved !== shots.length}><Play size={16} />Generate approved videos</button></div></div>
-    <div className="queue-summary"><div className="queue-ring" style={{ "--progress": `${progress / 12 * 360}deg` } as React.CSSProperties}><span>{progress}<small>/12</small></span></div><div><span className="eyebrow">{activeQueue === "images" ? "Image batch" : activeQueue === "videos" ? "Video batch" : "Workflow status"}</span><h2>{running ? `${activeQueue === "images" ? "Creating image" : "Creating video"} ${active?.position ?? "…"}` : completed === 12 ? "All clips are ready" : approved === 12 ? "Images approved — videos unlocked" : images === 12 ? "Review images in the shot studio" : "Generate all twelve images first"}</h2><p>{api.mode === "mock" ? "Mock mode simulates both stages without spending API credit." : "Each approved image is passed to Omni Flash as that clip’s visual reference."}</p></div><div className="queue-cost"><small>{activeQueue === "images" ? "Image estimate" : "Video estimate"}</small><strong>{formatMoney(activeQueue === "images" ? api.pricing.frameEstimate * 12 : api.pricing.videoTotal)}</strong><span>{images}/12 images · {approved}/12 approved</span></div></div>
+  return <section className="page-content"><div className="page-heading queue-heading"><div><button className="back-link" onClick={onBack} disabled={running}><ArrowLeft size={14} />Shot studio</button><span className="eyebrow">Simple generation control</span><h1>Generation queue</h1><p>One job runs at a time. You can stop anytime; every completed image or video is kept.</p></div><div className="heading-actions"><button className="button secondary" onClick={onExport}><Download size={16} />Manifest</button>{running ? <button className="button stop-button" onClick={onStop} disabled={stopping}><Square size={14} fill="currentColor" />{stopping ? "Stopping…" : "Stop generation"}</button> : <button className="button primary" onClick={onRunVideos} disabled={approved !== shots.length}><Play size={16} />Generate approved videos</button>}</div></div>
+    <div className="queue-summary"><div className="queue-ring" style={{ "--progress": `${progress / 12 * 360}deg` } as React.CSSProperties}><span>{progress}<small>/12</small></span></div><div><span className="eyebrow">{activeQueue === "images" ? "Image batch" : activeQueue === "videos" ? "Video batch" : "Workflow status"}</span><h2>{stopping ? "Stopping after the current request" : running ? `${activeQueue === "images" ? "Creating image" : "Creating video"} ${active?.position ?? "…"}` : completed === 12 ? "All clips are ready" : approved === 12 ? "Images approved — videos unlocked" : images === 12 ? "Review images in the shot studio" : "Generate all twelve images first"}</h2><p>{stopping ? "No new jobs will start. Finished work remains in your project." : api.mode === "mock" ? "Mock mode simulates both stages without spending API credit." : "Each approved image is passed to Omni Flash as that clip’s visual reference."}</p></div><div className="queue-cost"><small>{activeQueue === "images" ? "Image estimate" : "Video estimate"}</small><strong>{formatMoney(activeQueue === "images" ? api.pricing.frameEstimate * 12 : api.pricing.videoTotal)}</strong><span>{images}/12 images · {approved}/12 approved</span></div></div>
     <div className="queue-table"><div className="queue-row queue-header"><span>Shot</span><span>Prompt</span><span>Approval</span><span>Status</span><span>Cost</span></div>{shots.map((shot, index) => <div className="queue-row" key={shot.id}><span className="queue-shot"><ShotVisual index={index} status={shot.status} frame={frames[shot.id]} compact /><b>{String(shot.position).padStart(2, "0")}</b></span><span><strong>{shot.title}</strong><small>{shot.motion}</small></span><span>{approvedFrames.has(shot.id) ? <span className="approval-badge"><Check size={11} />Approved</span> : frames[shot.id] ? "Review needed" : "Image needed"}</span><span><StatusBadge status={shot.status} /></span><span className="mono">{activeQueue === "images" ? "~$0.07" : "$0.60"}</span></div>)}</div>
   </section>;
 }
@@ -519,6 +556,7 @@ function CostModal({ stage, count, total, api, onClose, onConfirm }: { stage: Co
   return <div className="modal-wrap"><button className="modal-backdrop" onClick={onClose} aria-label="Close" /><div className="modal-card cost-card"><div className="modal-head"><div><span className="eyebrow">Cost checkpoint</span><h2>Review before generating.</h2><p>No paid request is sent until you confirm.</p></div><button className="icon-button" onClick={onClose}><X size={19} /></button></div>
     <div className="cost-lines"><div><span>{count} {isImages ? "Nano Banana reference images" : "Omni Flash clips"}<small>{isImages ? `${count} images × ~${formatMoney(api.pricing.frameEstimate)}` : `${count * 6} seconds × ${formatMoney(api.pricing.videoPerSecond)}`}</small></span><strong>{formatMoney(total)}</strong></div><div><span>{isImages ? "Approval gate remains active" : "Approved images attached"}<small>{isImages ? "Review or regenerate every image before video" : "Each clip uses its approved frame as reference"}</small></span><strong>{isImages ? "Stage 1" : "Stage 3"}</strong></div></div>
     <div className="cost-total"><span>Estimated batch total<small>Actual Google billing can vary</small></span><strong>{formatMoney(total)}</strong></div>
+    <div className="stop-note"><Square size={14} /><div><strong>You can stop the queue anytime</strong><p>Completed results are kept. A provider request that already started may still finish and may still be billed.</p></div></div>
     {api.mode === "mock" && <div className="mock-banner"><Sparkles size={17} /><div><strong>This run costs $0</strong><p>You are in mock mode. We’ll simulate all {count} {isImages ? "images" : "videos"} so you can test the workflow.</p></div></div>}
     <div className="modal-actions"><button className="button secondary" onClick={onClose}>Go back</button><button className="button primary" onClick={onConfirm}>{api.mode === "mock" ? `Run mock ${isImages ? "images" : "videos"}` : `Confirm ${formatMoney(total)} ${isImages ? "images" : "videos"}`}<ArrowRight size={16} /></button></div>
   </div></div>;
